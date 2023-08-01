@@ -1,0 +1,309 @@
+---
+title: "Product Segmentation using heirarchical clustering"
+output:
+  html_document: default
+  pdf_document: default
+date: "2023-07-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+r = getOption("repos")
+r["CRAN"] = "http://cran.us.r-project.org"
+options(repos = r)
+```
+
+# Introduction
+
+BrewDog is a multinational brewery and pub chain based out of Scotland. With an annual production of 800,000 hectolitres, it claims to be the number 1 craft brewer of Europe. BrewDog data provided available to us consists of 199 different beers. Each row is unique and has information that is required to cluster them. The different data information is as below:
+
+![](images/Table1.jpg)
+
+It is intended to cluster the beers according to their types, so that the company can market similar beers to their customers.
+
+# Methodology
+
+To proceed with the analysis, we must follow the below steps.
+
+![](images/Table2-01.jpg)
+
+After loading the data, we must check for any inconsistency. After data exploration, we notice the following:
+
+• Data transformation and reshaping -- not required
+
+• Aggregation -- not required
+
+• Missing data -- required
+
+```{r include=FALSE}
+#install necessary packages
+install.packages("VIM")
+install.packages("corrgram")
+install.packages("mice")
+install.packages("dplyr")
+install.packages("fastcluster")
+install.packages("NbClust")
+install.packages("cluster")
+install.packages("ggplot2")
+install.packages("dendextend")
+install.packages("reshape2")
+install.packages("purrr")
+install.packages("gridExtra")
+install.packages("grid")
+install.packages("fpc")
+
+
+# load necessary library
+library("VIM")
+library("corrgram")
+library("dplyr")
+library("mice")
+library("fastcluster")
+library("NbClust")
+library("cluster")
+library("ggplot2")
+library("gridExtra")
+library("grid")
+library("fpc")
+library("dendextend")
+library("reshape2")
+library("purrr")
+```
+
+```{r}
+# read data
+brewdogData <-read.csv('Brewdog.csv') 
+head(brewdogData)
+```
+
+## Data Exploration
+
+```{r echo=TRUE}
+# check missing data
+summary(brewdogData) # identified NA columns
+str(brewdogData)
+aggr(brewdogData, numbers=TRUE, prop=FALSE) # confirm NA column
+md.pattern(brewdogData, rotate.names = TRUE)
+
+```
+
+The following is observed in the dataset:
+
+1\. There are a total of 9 columns in the dataset.
+
+2\. Columns "Name" and "Yeast" are of character datatype and the rest are numerical.
+
+3\. Column "ABV" of numerical type has 7 missing values.
+
+4\. Column "EBC" of numerical type has 4 missing values.
+
+5\. There are no rows with both "ABV" and "EBC" are missing.
+
+To determine the reason of the missing data we need to find out if there is some sort of pattern in the missing data. We do a correlation analysis on the missing data against the other variables. The corrgram plot of the analysis is as below
+
+```{r echo=TRUE}
+# check what type of missing data
+missdata <-brewdogData 
+missdata$missing <-as.numeric(!complete.cases(brewdogData)) 
+corrgram(missdata, cex.labels = 1.5) 
+
+# On analysis of the missing data we notice that it is compeletely missing at random. 
+```
+
+From the correlation plot we see that the data is missing completely at random (MCAR).
+
+We can handle the missing data either by deletion/removal or by replacing/imputation.
+
+• Deletion/Removal -- Removal of a data row or column will decrease the accuracy of the model. Since each row contains a different beer type removal will delete that from the final cluster.
+
+• Replacing/imputation -- Since the data is missing completely at random so imputation is the best suited option. The two types of imputation: 1 . Simple imputation 2. Multiple imputation
+
+We impute using both the methods to compare which is the most suitable.
+
+Simple Imputation
+
+```{r}
+#Simple Imputation
+brew_si <- brewdogData
+brew_si$ABV[!complete.cases(brew_si$ABV)] <- mean(brew_si$ABV, na.rm = TRUE)
+brew_si$EBC[!complete.cases(brew_si$EBC)] <- mean(brew_si$EBC, na.rm = TRUE)
+
+```
+
+Multiple Imputation
+
+```{r}
+#Multiple Imputation using MICE package
+brew_imi <-mice(brewdogData, m = 5, maxit = 10)
+brew_mi <-complete(brew_imi)
+```
+
+Visually evaluating the imputation methods
+
+```{r echo=TRUE}
+# check distribution after imputation
+par(mfrow=c(2,3))
+hist(brewdogData$ABV, main = "Original ABV") # slight shift in shape, but acceptable given the stat in summary
+hist(brew_si$ABV, main = "Simple Imputation ABV")
+hist(brew_mi$ABV, main = "Multiple Imputation ABV")
+
+hist(brewdogData$EBC, main = "Original EBC") # slight shift in shape, but acceptable given the stat in summary
+hist(brew_si$EBC, main = "Simple Imputation EBC")
+hist(brew_mi$EBC, main = "Multiple Imputation EBC")
+```
+
+Comparing the histograms, there is not much difference between simple and multiple method of imputation. Now they are compared on the basis of statistical data.
+
+```{r echo=TRUE}
+summary(brewdogData$ABV) #Original ABV
+summary(brew_si$ABV) #Simple Imputation ABV
+summary(brew_mi$ABV) #Multiple Imputation ABV
+sd(brewdogData$ABV,na.rm=TRUE) #Original ABV 
+sd(brew_si$ABV, na.rm = TRUE) #Simple Imputation ABV
+sd(brew_mi$ABV,na.rm=TRUE) #Multiple Imputation ABV
+
+summary(brewdogData$EBC) #Original EBC
+summary(brew_si$EBC) #Simple Imputation EBC
+summary(brew_mi$EBC) #Multiple Imputation EBC
+sd(brewdogData$EBC,na.rm=TRUE) #Original EBC 
+sd(brew_si$EBC, na.rm = TRUE) #Simple Imputation EBC
+sd(brew_mi$EBC,na.rm=TRUE) #Multiple Imputation EBC
+```
+
+Both simple and multiple imputation methods provided nearly similar results. However to get a more accurate estimate of missing value multiple imputation is a stronger method which gives better estimate. Since the dataset is not large, both the methods provided nearly similar result. For our analysis, we will proceed further with the multiple imputation method for the missing data.
+
+```{r}
+brewdogData_complete <- brew_mi
+```
+
+After we are done with the data cleaning, now the data is ready to be analysed further. Data needs to be scaled before proceeding further sa different columns are using differnt measurement units.
+
+```{r}
+# Scaling the data
+brewdogData_complete[,2:8] <- scale(brewdogData_complete[,2:8], center = TRUE, scale = TRUE)
+```
+
+# Clustering
+
+The steps for clustering are as follows:
+
+• Create a dissimilarity matrix
+
+• Chose a cluster method
+
+• Analyze the cluster
+
+## Creating the dissimilarity matrix
+
+To do cluster analysis we must find the distance between the different data points. Since we have non-numeric data so in order to find the dissimilarity matrix we will use the function daisy(). In order to use the daisy() function we must convert the character columns to factors. Once the distance between the data points have been ascertained we will proceed with finding the best suited clustering method.
+
+```{r}
+#Converting character columns to factors
+brewdogData_complete$Yeast <- as.factor(brewdogData_complete$Yeast)
+
+#Dissimilarity matrix
+brew_dendogram <- daisy(brewdogData_complete[,2:9])
+```
+
+## Choosing the cluster method
+
+Since we are required to find the similarity of different beers both K means clustering and hierarchical clustering can be used. However, as the desired output visualization is a dendrogram so we will be using Hierarchical clustering here.
+
+Hierarchical clustering can be of two types
+
+1\. Agglomerative (bottom-up)
+
+2\. Divisive (top-down)
+
+We would proceed with Agglomerative clustering as it is computationally simpler. To get a balanced approach to the cluster analysis, we will use complete linkages method. The following dendrogram is produced.
+
+```{r echo=TRUE}
+#Dendrogram without cluster information
+clust <- hclust(brew_dendogram,  method = "complete")
+plot(clust,labels = brewdogData_complete$Name, main = "Agglomerative, complete linkages", cex=0.5, hang=-1)
+```
+
+## Analysis
+
+The above diagram is not highly helpful without the clusters' information. So, we need to find the best suited number of clusters. Optimal number of clusters are one in which the compactness of cluster is maximum and the separation between clusters is maximum. We will determine the optimal number of clusters by virtue of the Elbow method, where the bend gives a good estimate of the optimal number of clusters.
+
+```{r echo=TRUE}
+#Function that stores the individual distances in a table
+cstats.table <- function(dist, tree, k) {
+  clust.assess <- c("cluster.number","n","within.cluster.ss","average.within","average.between",
+                    "wb.ratio","dunn2","avg.silwidth")
+  clust.size <- c("cluster.size")
+  stats.names <- c()
+  row.clust <- c()
+  output.stats <- matrix(ncol = k, nrow = length(clust.assess))
+  cluster.sizes <- matrix(ncol = k, nrow = k)
+  for(i in c(1:k)){
+    row.clust[i] <- paste("Cluster-", i, " size")
+  }
+  for(i in c(2:k)){
+    stats.names[i] <- paste("Test", i-1)
+    
+    for(j in seq_along(clust.assess)){
+      output.stats[j, i] <- unlist(cluster.stats(d = dist, clustering = cutree(tree, k = i))[clust.assess])[j]
+      
+    }
+    
+    for(d in 1:k) {
+      cluster.sizes[d, i] <- unlist(cluster.stats(d = dist, clustering = cutree(tree, k = i))[clust.size])[d]
+      dim(cluster.sizes[d, i]) <- c(length(cluster.sizes[i]), 1)
+      cluster.sizes[d, i]
+      
+    }
+  }
+  output.stats.df <- data.frame(output.stats)
+  cluster.sizes <- data.frame(cluster.sizes)
+  cluster.sizes[is.na(cluster.sizes)] <- 0
+  rows.all <- c(clust.assess, row.clust)
+  output <- rbind(output.stats.df, cluster.sizes)[ ,-1]
+  colnames(output) <- stats.names[2:k]
+  rownames(output) <- rows.all
+  is.num <- sapply(output, is.numeric)
+  output[is.num] <- lapply(output[is.num], round, 2)
+  output
+}
+```
+
+```{r echo=TRUE}
+
+# Agglomerative clustering to identify the elbow (optimal number of clusters)
+ggplot(data = data.frame(t(cstats.table(brew_dendogram, clust, 15))), 
+       aes(x=cluster.number, y=within.cluster.ss)) + 
+  geom_point()+
+  geom_line()+
+  ggtitle("Agglomerative clustering") +
+  labs(x = "Num.of clusters", y = "Within clusters") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+We notice there are two bends (elbows) one at 4 and the other at 7. As the information from this analysis will be used for marketing purpose, similar clusters will be helpful. So, 4 is a suitable number of clusters going forward. Using this knowledge of 4 clusters as the optimal one, we get the desired dendrogram as follows
+
+```{r echo=TRUE}
+# Clustered dendrogram
+brew_dendrogram <- as.dendrogram(clust)
+brew_dendrogram.col <- brew_dendrogram %>%
+  set("branches_k_color", k = 4, value =   c("#E69F00", "#56B4E9", "#009E73", "#CC79A7", "#0072B2", "#D55E00")) %>%
+  set("branches_lwd", 0.6) %>%
+  set("labels_colors", value = c("darkslategray")) %>% 
+  set("labels_cex", 0.5)
+ggd1 <- as.ggdend(brew_dendrogram.col)
+ggplot(ggd1, theme = theme_minimal()) + 
+  labs(x = "Num. observations", y = "Dissimilarity", title = "Agglomerative, complete linkages, k = 4")
+```
+
+Based on the information gathered from the dendogram, the number of beer types in each cluster is as below
+
+```{r echo=FALSE}
+#Beer count in each cluster information
+cluster_data <- data.frame(brewdogData_complete, clusterNo = cutree(clust, k=4))
+
+cluster_data%>%group_by(clusterNo)%>%count(clusterNo) 
+```
+
+# Conclusion
+
+On analysis of the data that has been provided by BrewDog, it is observed that beers can be clustered into four types. Information about these four clusters will help BrewDog to target similar product to consumers.
